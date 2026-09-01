@@ -771,7 +771,11 @@ def run():
         category_id = get_or_create_category(rewritten.get("category") or config.DEFAULT_CATEGORY)
 
         media_id = None
-        detected_group = detect_group(item["title"]) or detect_group(new_title)
+        detected_group = (
+            detect_group(rewritten.get("card_label", ""))
+            or detect_group(new_title)
+            or detect_group(item["title"])
+        )
         if getattr(config, "ENABLE_GROUP_IMAGES", False) and detected_group:
             group_images = load_group_images()
             media_id = pick_group_image_media_id(detected_group, group_images)

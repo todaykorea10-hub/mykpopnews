@@ -1,0 +1,60 @@
+name: Auto Publish K-pop News
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'   # 3시간마다 실행 (UTC 기준. 한국시간 -9시간)
+  workflow_dispatch:         # 깃허브 화면에서 수동으로 "Run workflow" 버튼으로도 실행 가능
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 필요한 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: config.py 생성 (GitHub Secrets 값 주입)
+        run: |
+          cat > config.py << 'EOF'
+          from config_base import *
+          import os
+
+          WP_URL = os.environ["WP_URL"]
+          WP_USERNAME = os.environ["WP_USERNAME"]
+          WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"]
+
+          GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+
+          NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID", "")
+          NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "")
+          KAKAO_REST_API_KEY = os.environ.get("KAKAO_REST_API_KEY", "")
+          EOF
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+
+      - name: 자동 발행 실행
+        run: python auto_publish.py
+
+      - name: 상태 파일 변경사항 저장소에 커밋
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add posted_links.json posted_titles.json group_images.json group_image_rotation.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "chore: 자동 발행 상태 업데이트 [skip ci]"
+          git push

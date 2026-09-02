@@ -669,7 +669,7 @@ def is_already_posted_wp(title):
         resp = requests.get(
             f"{config.WP_URL}/wp-json/wp/v2/posts",
             headers=wp_auth_header(),
-            params={"search": title, "per_page": 5},
+            params={"search": title, "per_page": 20},
             timeout=10,
         )
         resp.raise_for_status()
@@ -746,7 +746,7 @@ def run():
         print(f"\n[기사 후보 {index}] {item['title']}")
 
         full_text = fetch_full_text(real_link)
-        if len(full_text) < 50:
+        if len(full_text) < 150:
             print("  → 본문 확보 실패, 건너뜀")
             continue
 

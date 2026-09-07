@@ -35,6 +35,7 @@ from google import genai
 from googlenewsdecoder import gnewsdecoder
 
 import config
+from sns_post import post_to_twitter, post_to_instagram
 
 POSTED_LINKS_FILE = "posted_links.json"
 POSTED_TITLES_FILE = "posted_titles.json"
@@ -652,6 +653,18 @@ def upload_media(image_bytes, filename, mime_type="image/png"):
     return resp.json()["id"]
 
 
+def get_media_url(media_id):
+    """미디어 ID로 실제 이미지 URL을 조회 (인스타그램 게시에 필요)."""
+    if not media_id:
+        return None
+    try:
+        resp = requests.get(f"{config.WP_URL}/wp-json/wp/v2/media/{media_id}", headers=wp_auth_header(), timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("source_url")
+    except Exception:
+        return None
+
+
 def get_or_create_category(name):
     resp = requests.get(f"{config.WP_URL}/wp-json/wp/v2/categories", headers=wp_auth_header(), params={"search": name}, timeout=10)
     resp.raise_for_status()
@@ -669,7 +682,7 @@ def is_already_posted_wp(title):
         resp = requests.get(
             f"{config.WP_URL}/wp-json/wp/v2/posts",
             headers=wp_auth_header(),
-            params={"search": title, "per_page": 20},
+            params={"search": title, "per_page": 5},
             timeout=10,
         )
         resp.raise_for_status()
@@ -746,7 +759,7 @@ def run():
         print(f"\n[기사 후보 {index}] {item['title']}")
 
         full_text = fetch_full_text(real_link)
-        if len(full_text) < 150:
+        if len(full_text) < 50:
             print("  → 본문 확보 실패, 건너뜀")
             continue
 
@@ -771,6 +784,7 @@ def run():
         category_id = get_or_create_category(rewritten.get("category") or config.DEFAULT_CATEGORY)
 
         media_id = None
+        image_bytes = None
         detected_group = (
             detect_group(rewritten.get("card_label", ""))
             or detect_group(new_title)
@@ -808,6 +822,15 @@ def run():
             save_posted_link(item["link"])
             save_posted_title(new_title)
             published += 1
+
+            try:
+                post_to_twitter(new_title, result.get("link"), image_bytes)
+                post_to_instagram(
+                    f"{new_title}\n\n{rewritten.get('meta_description', '')}\n\n#{(detected_group or '').replace(' ', '')} #kpop",
+                    get_media_url(media_id),
+                )
+            except Exception as e:
+                print(f"  ⚠️ SNS 게시 중 오류(발행 자체는 완료됨): {e}")
 
             if published < config.MAX_POSTS_PER_RUN:
                 base_interval = config.SPREAD_MINUTES / config.MAX_POSTS_PER_RUN

@@ -408,6 +408,12 @@ def rewrite_with_gemini(title, raw_text, source_name, recent_titles):
         [Source outlet] {source_name}
         [Source content excerpt] {raw_text}
         {recent_block}
+        [CRITICAL JSON SAFETY — your output must be valid JSON that a strict parser can read]
+        - Never use straight double quotes (") inside any field's text. Use single quotes (')
+          for any quoted phrase or title mentioned within the body, e.g. Jennie's new track 'Antifreeze'.
+        - Do not include literal line breaks inside string values — write body_html as one
+          continuous string using <p> tags to separate paragraphs, not actual newlines.
+
         Respond with ONLY this JSON structure (no extra text, no code fences):
         {{
           "title": "Catchy, trendy English title for global K-pop fans (under ~70 characters), reflecting the mandatory angle above rather than just restating the raw headline",
@@ -451,6 +457,12 @@ def rewrite_with_gemini(title, raw_text, source_name, recent_titles):
         [원문 출처] {source_name}
         [원문 내용 일부] {raw_text}
         {recent_block}
+        [JSON 형식 안전 규칙 — 반드시 지켜야 파싱 오류가 안 남]
+        - 본문 어디에도 큰따옴표(")를 직접 쓰지 마세요. 인용구나 제목을 강조할 땐
+          작은따옴표(')를 쓰세요 (예: 제니의 신곡 '안티프리즈').
+        - 문자열 값 안에 실제 줄바꿈을 넣지 마세요 — body_html은 <p> 태그로만
+          문단을 구분하고, 하나의 이어진 문자열로 작성하세요.
+
         다음 JSON 형식으로만 응답하세요 (다른 텍스트나 코드블록 없이 순수 JSON만):
         {{
           "title": "재작성된 제목 (30자 내외, 클릭을 유도하되 과장 금지, 위 필수 관점을 반영)",
@@ -463,13 +475,40 @@ def rewrite_with_gemini(title, raw_text, source_name, recent_titles):
 
 
     response = call_gemini_with_retry(config.GEMINI_MODEL, prompt)
-    raw = response.text
-    match = re.search(r"(\{.*\})", raw, re.DOTALL)
-    if not match:
-        raise ValueError("Gemini가 JSON을 반환하지 않았습니다.")
-    result = json.loads(match.group(1).strip())
+    result = parse_gemini_json(response.text)
+
+    if result is None:
+        # 파싱 실패: JSON 형식이 깨진 응답을 한 번 더 새로 생성해서 재시도
+        print("  🔁 JSON 파싱 실패, 재생성 시도...")
+        response = call_gemini_with_retry(config.GEMINI_MODEL, prompt)
+        result = parse_gemini_json(response.text)
+
+    if result is None:
+        raise ValueError("Gemini가 올바른 JSON을 반환하지 않았습니다 (재시도 후에도 실패).")
+
     result["body_html"] = strip_stray_images(result.get("body_html", ""))
     return result
+
+
+def parse_gemini_json(raw_text):
+    """Gemini 응답에서 JSON을 최대한 관대하게 파싱. 실패하면 None 반환."""
+    match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
+    if not match:
+        return None
+    json_text = match.group(1).strip()
+
+    # 1차: 그대로 시도 (strict=False로 문자열 안의 raw 줄바꿈/탭 등은 허용)
+    try:
+        return json.loads(json_text, strict=False)
+    except json.JSONDecodeError:
+        pass
+
+    # 2차: 실제 줄바꿈 문자를 공백으로 치환 후 재시도 (문자열 안팎 어디든 안전하게 무해함)
+    try:
+        cleaned = json_text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        return json.loads(cleaned, strict=False)
+    except json.JSONDecodeError:
+        return None
 
 
 def call_gemini_with_retry(model, prompt, max_attempts=4):

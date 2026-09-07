@@ -21,13 +21,10 @@ def post_to_twitter(title, url, image_bytes=None):
     try:
         import tweepy
 
-        auth = tweepy.OAuth1UserHandler(
-            config.TWITTER_API_KEY,
-            config.TWITTER_API_SECRET,
-            config.TWITTER_ACCESS_TOKEN,
-            config.TWITTER_ACCESS_TOKEN_SECRET,
-        )
-        api_v1 = tweepy.API(auth)  # 이미지 업로드는 아직 v1.1 API로만 가능
+        # 참고: X API 무료 등급은 이미지 업로드(v1.1 media_upload)를 지원하지 않아
+        # 유료 등급(Basic $200/월~)이 필요합니다. 그래서 이미지 첨부 없이 텍스트+링크만
+        # 게시합니다 — 링크를 걸면 X가 사이트의 OG 이미지를 자동으로 가져와
+        # 미리보기 카드를 만들어주므로, 이미지 업로드 없이도 카드형으로 보입니다.
         client = tweepy.Client(
             consumer_key=config.TWITTER_API_KEY,
             consumer_secret=config.TWITTER_API_SECRET,
@@ -35,16 +32,11 @@ def post_to_twitter(title, url, image_bytes=None):
             access_token_secret=config.TWITTER_ACCESS_TOKEN_SECRET,
         )
 
-        media_ids = None
-        if image_bytes:
-            media = api_v1.media_upload(filename="card.png", file=io.BytesIO(image_bytes))
-            media_ids = [media.media_id]
-
         text = f"{title}\n\n{url}"
         if len(text) > 270:
             text = text[:267] + "..."
 
-        client.create_tweet(text=text, media_ids=media_ids)
+        client.create_tweet(text=text)
         print("  🐦 X(트위터) 게시 완료")
     except Exception as e:
         print(f"  ⚠️ X(트위터) 게시 실패: {e}")

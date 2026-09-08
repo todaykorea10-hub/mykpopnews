@@ -251,9 +251,10 @@ def fetch_naver_news_candidates(count_per_keyword=10):
     return news_list
 
 
-def fetch_daum_news_candidates(count_per_keyword=10):
+def fetch_daum_news_candidates(count_per_keyword=50):
     """카카오(다음) 웹 검색 API를 다음뉴스 도메인으로 필터링해서 사용.
-    다음은 별도 뉴스 전용 검색 API를 제공하지 않아 웹 검색으로 대체합니다."""
+    다음은 별도 뉴스 전용 검색 API를 제공하지 않아 웹 검색으로 대체합니다.
+    카카오 API의 요청당 최대치(50)로 가져와서 daum.net 도메인이 걸릴 확률을 높인다."""
     if not getattr(config, "ENABLE_DAUM_SEARCH", False):
         return []
 
@@ -301,7 +302,7 @@ def fetch_news_candidates(count_per_keyword=15):
     for source_name, fetch_fn in (
         ("Google", lambda: fetch_google_news_candidates(count_per_keyword)),
         ("Naver", lambda: fetch_naver_news_candidates(count_per_keyword)),
-        ("Daum", lambda: fetch_daum_news_candidates(count_per_keyword)),
+        ("Daum", lambda: fetch_daum_news_candidates(50)),
     ):
         try:
             results = fetch_fn()

@@ -65,7 +65,7 @@ jobs:
           EOF
 
       - name: 자동 발행 실행
-        run: python auto_publish.py
+        run: python -u auto_publish.py
 
       - name: 상태 파일 변경사항 저장소에 커밋
         run: |

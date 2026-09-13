@@ -4,12 +4,12 @@ K-pop 뉴스 자동 발행 파이프라인 (워드프레스용)
 기존에 검증된 블로거 자동화 스크립트(blogger_auto.py)의 핵심 로직을 이식했습니다:
 - google-genai 공식 SDK 사용 (raw REST 호출 대신 — 계정별 키 형식 차이에 안전)
 - 아티스트/트렌드 키워드를 넓게 조합한 구글 뉴스 검색
-- 제목 유사도 기반 중복 방지 (게시 이력 누적)
+- 제목 유사도 기반 중복 방지 (최근 N일 이내 게시 이력만 비교)
 - 발행 간 무작위 대기로 스팸 신호 방지
 
 흐름:
 1) 다수 키워드로 구글 뉴스 RSS 검색 → 리다이렉트 URL을 실제 언론사 URL로 변환
-2) 이미 다룬 기사(제목 유사도)와 중복 제거
+2) 이미 다룬 기사(제목 유사도, 최근 N일 이내만 비교)와 중복 제거
 3) Gemini로 재작성 (제목/본문/카테고리/메타설명/카드문구)
 4) 연예인 사진을 전혀 쓰지 않는 타이포그래피 그래픽 카드를 자동 생성
    (저작권·초상권 리스크 원천 차단)
@@ -27,6 +27,7 @@ import os
 import random
 import re
 import time
+import datetime
 from urllib.parse import urlparse
 
 import requests
@@ -73,16 +74,6 @@ def load_json_set(path):
     return set()
 
 
-def load_json_list(path):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
-
-
 def save_posted_link(link):
     links = load_json_set(POSTED_LINKS_FILE)
     links.add(link)
@@ -90,16 +81,57 @@ def save_posted_link(link):
         json.dump(list(links), f, ensure_ascii=False, indent=2)
 
 
+def load_posted_titles():
+    """저장된 제목 이력을 불러온다. 예전 형식(단순 문자열 리스트)과 새 형식
+    ({"title":..., "date":...} 리스트)을 모두 지원한다. 예전 항목은 날짜
+    정보가 없어서 date=None으로 취급되며, 날짜 기준 비교에서는 자동 제외된다."""
+    if not os.path.exists(POSTED_TITLES_FILE):
+        return []
+    try:
+        with open(POSTED_TITLES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    normalized = []
+    for item in data:
+        if isinstance(item, str):
+            normalized.append({"title": item, "date": None})
+        elif isinstance(item, dict) and "title" in item:
+            normalized.append({"title": item["title"], "date": item.get("date")})
+    return normalized
+
+
 def save_posted_title(title):
-    titles = load_json_list(POSTED_TITLES_FILE)
-    titles.append(title)
-    titles = titles[-500:]  # 무한 증가 방지
+    titles = load_posted_titles()
+    titles.append({"title": title, "date": datetime.datetime.now().isoformat()})
+    titles = titles[-1000:]  # 무한 증가 방지 (5일 비교 범위보다 넉넉한 버퍼)
     with open(POSTED_TITLES_FILE, "w", encoding="utf-8") as f:
         json.dump(titles, f, ensure_ascii=False, indent=2)
 
 
+def get_recent_titles_within_days(days):
+    """최근 N일 이내에 저장된 제목만 반환 (날짜 정보 없는 예전 항목은 제외)."""
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    result = []
+    for item in load_posted_titles():
+        if not item["date"]:
+            continue
+        try:
+            item_date = datetime.datetime.fromisoformat(item["date"])
+        except Exception:
+            continue
+        if item_date >= cutoff:
+            result.append(item["title"])
+    return result
+
+
 def is_similar_to_existing(title):
-    for existing in load_json_list(POSTED_TITLES_FILE):
+    """최근 N일(config.DEDUP_WINDOW_DAYS, 기본 5일) 이내에 발행된 제목들과만
+    유사도를 비교한다. 오래된 글과의 우연한 문장 유사성으로 인한 오탐지를 방지."""
+    window_days = getattr(config, "DEDUP_WINDOW_DAYS", 5)
+    recent_titles = get_recent_titles_within_days(window_days)
+    for existing in recent_titles:
         ratio = difflib.SequenceMatcher(None, title.lower(), existing.lower()).ratio()
         if ratio >= config.SIMILARITY_THRESHOLD:
             return True
@@ -107,8 +139,10 @@ def is_similar_to_existing(title):
 
 
 def get_recent_titles_for_dedup(limit=15):
-    titles = load_json_list(POSTED_TITLES_FILE)
-    return titles[-limit:] if titles else []
+    """Gemini 프롬프트에 '이런 각도는 피하라'고 보여줄 최근 제목 목록."""
+    window_days = getattr(config, "DEDUP_WINDOW_DAYS", 5)
+    recent = get_recent_titles_within_days(window_days)
+    return recent[-limit:] if recent else []
 
 
 # ---------------------------------------------------------------------------

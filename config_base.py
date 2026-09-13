@@ -2,7 +2,7 @@
 # 이 파일은 깃허브에 올려도 안전합니다 (실제 config.py가 이 파일을 불러다 씁니다).
 
 # ── Gemini 모델 ──
-GEMINI_MODEL = "gemini-3.5-flash-lite"  # 기사 재작성용 텍스트 모델. Gemini 모델 세대교체가 잦으니, 404(모델 지원 종료) 오류가 뜨면 그 에러 메시지가 안내하는 최신 모델명으로 바로 교체하세요
+GEMINI_MODEL = "gemini-3.1-flash-lite"  # 기사 재작성용 텍스트 모델. Gemini 모델 세대교체가 잦으니, 404(모델 지원 종료) 오류가 뜨면 그 에러 메시지가 안내하는 최신 모델명으로 바로 교체하세요
 
 # ── 검색 소스 켜고 끄기 (비밀값 아님, 토글만) ──
 ENABLE_NAVER_SEARCH = False
@@ -46,6 +46,7 @@ GROUP_ALIASES = {
     "izna": ["이즈나", "izna"],
 }
 RECENCY_DAYS = 1  # 최근 N일 이내 뉴스만 검색
+DEDUP_WINDOW_DAYS = 5   # 최근 N일 이내 발행된 제목과만 유사도 비교
 
 # ── K-pop 관련성 검증: 제목에 그룹명이 없어도 이 용어 중 하나가 있으면 통과 ──
 GENERIC_KPOP_TERMS = [

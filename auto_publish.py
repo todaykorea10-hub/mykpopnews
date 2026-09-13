@@ -20,6 +20,8 @@ config.example.py 를 config.py 로 복사하고 값을 채운 뒤 사용하세�
 """
 
 import base64
+import socket
+socket.setdefaulttimeout(30)  # 어떤 네트워크 요청이든 30초 넘으면 강제로 포기
 import difflib
 import io
 import json

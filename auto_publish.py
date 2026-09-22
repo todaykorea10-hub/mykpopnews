@@ -177,10 +177,10 @@ def resolve_real_url(google_news_url):
         result = gnewsdecoder(google_news_url, interval=1)
         if result.get("status") and result.get("decoded_url"):
             return result["decoded_url"]
+        print(f"  🔍 링크 디코딩 실패 상세: status={result.get('status')}, message={result.get('message')}")
     except Exception as e:
-        print(f"  ⚠️ 링크 디코딩 실패: {e}")
+        print(f"  ⚠️ 링크 디코딩 예외: {type(e).__name__}: {e}")
     return google_news_url
-
 
 def is_video_link(url):
     domain = urlparse(url).netloc.lower()

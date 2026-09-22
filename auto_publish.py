@@ -357,6 +357,17 @@ def fetch_news_candidates(count_per_keyword=15):
     return combined
 
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://news.google.com/",
+}
+
+
 def fetch_full_text(url, max_chars=4000):
     try:
         resp = requests.get(url, timeout=8, headers=HEADERS)
@@ -367,7 +378,9 @@ def fetch_full_text(url, max_chars=4000):
         paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
         text = "\n".join(p for p in paragraphs if len(p) > 30)
         if len(text) < 50:
-            print(f"  🔍 본문 요청 실패 상세: 응답은 왔지만 본문 텍스트 추출 안됨 (길이 {len(text)})")
+            page_title = soup.find("title")
+            page_title_text = page_title.get_text(strip=True) if page_title else "(제목 없음)"
+            print(f"  🔍 본문 요청 실패 상세: 응답 200이지만 본문 추출 안됨 — 실제 받은 페이지 제목: '{page_title_text}'")
         return text[:max_chars]
     except Exception as e:
         print(f"  🔍 본문 요청 실패 상세: 예외 발생 — {type(e).__name__}: {e}")

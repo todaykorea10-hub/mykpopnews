@@ -175,12 +175,13 @@ def resolve_real_url(google_news_url):
     """구글 뉴스 RSS의 리다이렉트 URL을 실제 언론사 URL로 변환. 실패 시 원래 URL 반환."""
     try:
         result = gnewsdecoder(google_news_url, interval=1)
+        print(f"  🔍 gnewsdecoder 원본 반환값: {result!r}")
         if result.get("status") and result.get("decoded_url"):
             return result["decoded_url"]
-        print(f"  🔍 링크 디코딩 실패 상세: status={result.get('status')}, message={result.get('message')}")
     except Exception as e:
         print(f"  ⚠️ 링크 디코딩 예외: {type(e).__name__}: {e}")
     return google_news_url
+
 
 def is_video_link(url):
     domain = urlparse(url).netloc.lower()

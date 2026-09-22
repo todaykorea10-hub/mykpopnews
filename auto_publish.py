@@ -9,7 +9,7 @@ K-pop 뉴스 자동 발행 파이프라인 (워드프레스용)
 
 흐름:
 1) 다수 키워드로 구글 뉴스 RSS 검색 → 리다이렉트 URL을 실제 언론사 URL로 변환
-2) 이미 다룬 기사(제목 유사도, 최근 N일 이내만 비교)와 중복 제거
+2) 이미 다룬 기사(제목 유사도, 최근 N일 이내)와 중복 제거
 3) Gemini로 재작성 (제목/본문/카테고리/메타설명/카드문구)
 4) 연예인 사진을 전혀 쓰지 않는 타이포그래피 그래픽 카드를 자동 생성
    (저작권·초상권 리스크 원천 차단)
@@ -17,11 +17,19 @@ K-pop 뉴스 자동 발행 파이프라인 (워드프레스용)
 
 실행: python auto_publish.py
 config.example.py 를 config.py 로 복사하고 값을 채운 뒤 사용하세요.
+
+--- 진단 로그 안내 (2026-09 GitHub Actions "본문 확보 실패" 문제 추적용) ---
+- resolve_real_url()이 gnewsdecoder()가 반환한 dict를 있는 그대로(repr) 출력합니다.
+  → 실제 키 이름/값을 확인해서, status/decoded_url 키가 정말 존재하는지,
+    라이브러리 버전에 따라 다른 키를 쓰는지 확인할 수 있습니다.
+- fetch_full_text()가 HTTP 상태코드가 200이 아니면 그 코드를, 200인데 본문이
+  비어 있으면 실제로 받아온 페이지의 <title>을 출력합니다.
+  → "본문 확보 실패"가 실은 "구글 뉴스 중계 페이지 자체를 받아온 것"인지
+    (title이 "Google 뉴스"로 나옴), 다른 차단/오류인지 바로 구분됩니다.
+문제 원인이 확인되면 이 로그들은 다시 줄여도 됩니다.
 """
 
 import base64
-import socket
-socket.setdefaulttimeout(30)  # 어떤 네트워크 요청이든 30초 넘으면 강제로 포기
 import difflib
 import io
 import json
@@ -43,11 +51,19 @@ from sns_post import post_to_twitter, post_to_instagram
 POSTED_LINKS_FILE = "posted_links.json"
 POSTED_TITLES_FILE = "posted_titles.json"
 
+# 실제 브라우저처럼 보이도록 헤더를 보강 (일부 언론사/구글이 User-Agent만 보고
+# 차단하거나 다른 페이지를 내려주는 경우를 줄이기 위함)
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    )
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://news.google.com/",
 }
 
 VIDEO_DOMAINS = ("youtube.com", "youtu.be", "m.youtube.com")
@@ -63,8 +79,11 @@ genai_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 
 # ---------------------------------------------------------------------------
-# 게시 이력 (중복 방지)
+# 게시 이력 (중복 방지) — 날짜 태그 기반, 최근 N일만 비교
 # ---------------------------------------------------------------------------
+
+DEDUP_WINDOW_DAYS = getattr(config, "DEDUP_WINDOW_DAYS", 5)
+
 
 def load_json_set(path):
     if os.path.exists(path):
@@ -76,6 +95,30 @@ def load_json_set(path):
     return set()
 
 
+def load_json_list(path):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def load_posted_titles():
+    """posted_titles.json을 읽어서 {"title":..., "date": "YYYY-MM-DD"} 형태의
+    리스트로 반환. 예전 방식(문자열만 있던 파일)과도 호환됨 — 그 경우
+    date는 None으로 채워지고, 날짜 기준 비교에서는 자동으로 제외됨."""
+    raw = load_json_list(POSTED_TITLES_FILE)
+    normalized = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            normalized.append({"title": entry.get("title", ""), "date": entry.get("date")})
+        elif isinstance(entry, str):
+            normalized.append({"title": entry, "date": None})
+    return normalized
+
+
 def save_posted_link(link):
     links = load_json_set(POSTED_LINKS_FILE)
     links.add(link)
@@ -83,57 +126,33 @@ def save_posted_link(link):
         json.dump(list(links), f, ensure_ascii=False, indent=2)
 
 
-def load_posted_titles():
-    """저장된 제목 이력을 불러온다. 예전 형식(단순 문자열 리스트)과 새 형식
-    ({"title":..., "date":...} 리스트)을 모두 지원한다. 예전 항목은 날짜
-    정보가 없어서 date=None으로 취급되며, 날짜 기준 비교에서는 자동 제외된다."""
-    if not os.path.exists(POSTED_TITLES_FILE):
-        return []
-    try:
-        with open(POSTED_TITLES_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return []
-
-    normalized = []
-    for item in data:
-        if isinstance(item, str):
-            normalized.append({"title": item, "date": None})
-        elif isinstance(item, dict) and "title" in item:
-            normalized.append({"title": item["title"], "date": item.get("date")})
-    return normalized
-
-
 def save_posted_title(title):
     titles = load_posted_titles()
-    titles.append({"title": title, "date": datetime.datetime.now().isoformat()})
-    titles = titles[-1000:]  # 무한 증가 방지 (5일 비교 범위보다 넉넉한 버퍼)
+    titles.append({"title": title, "date": datetime.date.today().isoformat()})
+    titles = titles[-1000:]  # 무한 증가 방지 (날짜 필터링 여유를 위해 넉넉히)
     with open(POSTED_TITLES_FILE, "w", encoding="utf-8") as f:
         json.dump(titles, f, ensure_ascii=False, indent=2)
 
 
-def get_recent_titles_within_days(days):
-    """최근 N일 이내에 저장된 제목만 반환 (날짜 정보 없는 예전 항목은 제외)."""
-    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+def get_recent_titles_within_days(days=DEDUP_WINDOW_DAYS):
+    """최근 N일 이내에 날짜가 찍힌 제목만 반환. 날짜가 없는(예전 형식) 항목은 제외."""
+    cutoff = datetime.date.today() - datetime.timedelta(days=days)
     result = []
-    for item in load_posted_titles():
-        if not item["date"]:
+    for entry in load_posted_titles():
+        date_str = entry.get("date")
+        if not date_str:
             continue
         try:
-            item_date = datetime.datetime.fromisoformat(item["date"])
-        except Exception:
+            entry_date = datetime.date.fromisoformat(date_str)
+        except ValueError:
             continue
-        if item_date >= cutoff:
-            result.append(item["title"])
+        if entry_date >= cutoff:
+            result.append(entry["title"])
     return result
 
 
 def is_similar_to_existing(title):
-    """최근 N일(config.DEDUP_WINDOW_DAYS, 기본 5일) 이내에 발행된 제목들과만
-    유사도를 비교한다. 오래된 글과의 우연한 문장 유사성으로 인한 오탐지를 방지."""
-    window_days = getattr(config, "DEDUP_WINDOW_DAYS", 5)
-    recent_titles = get_recent_titles_within_days(window_days)
-    for existing in recent_titles:
+    for existing in get_recent_titles_within_days():
         ratio = difflib.SequenceMatcher(None, title.lower(), existing.lower()).ratio()
         if ratio >= config.SIMILARITY_THRESHOLD:
             return True
@@ -141,10 +160,8 @@ def is_similar_to_existing(title):
 
 
 def get_recent_titles_for_dedup(limit=15):
-    """Gemini 프롬프트에 '이런 각도는 피하라'고 보여줄 최근 제목 목록."""
-    window_days = getattr(config, "DEDUP_WINDOW_DAYS", 5)
-    recent = get_recent_titles_within_days(window_days)
-    return recent[-limit:] if recent else []
+    titles = get_recent_titles_within_days()
+    return titles[-limit:] if titles else []
 
 
 # ---------------------------------------------------------------------------
@@ -171,15 +188,44 @@ def detect_group(text):
     return None
 
 
+# 진단 로그를 몇 건까지 자세히 찍을지 (너무 많이 찍히면 로그가 지저분해짐)
+_RESOLVE_DEBUG_LIMIT = 8
+_resolve_debug_count = 0
+
+
 def resolve_real_url(google_news_url):
     """구글 뉴스 RSS의 리다이렉트 URL을 실제 언론사 URL로 변환. 실패 시 원래 URL 반환."""
+    global _resolve_debug_count
     try:
         result = gnewsdecoder(google_news_url, interval=1)
-        print(f"  🔍 gnewsdecoder 원본 반환값: {result!r}")
-        if result.get("status") and result.get("decoded_url"):
-            return result["decoded_url"]
+
+        if _resolve_debug_count < _RESOLVE_DEBUG_LIMIT:
+            _resolve_debug_count += 1
+            print(f"  🔎 [진단] gnewsdecoder 원본 반환값: {result!r}")
+
+        if isinstance(result, dict):
+            # 라이브러리 버전에 따라 status/decoded_url 대신 다른 키를 쓸 수도 있으니
+            # 가능한 키 이름들을 넓게 시도
+            decoded = (
+                result.get("decoded_url")
+                or result.get("url")
+                or result.get("real_url")
+            )
+            status_ok = result.get("status")
+            if status_ok is None:
+                # status 키 자체가 없는 버전 — decoded 값이 있으면 성공으로 간주
+                status_ok = bool(decoded)
+            if status_ok and decoded:
+                return decoded
+            else:
+                print(
+                    f"  ⚠️ 링크 디코딩 실패(빈 결과): status={result.get('status')!r}, "
+                    f"decoded_url={result.get('decoded_url')!r}, 사용된 키들={list(result.keys())}"
+                )
+        else:
+            print(f"  ⚠️ 링크 디코딩 실패: 예상치 못한 반환 타입 {type(result)} → {result!r}")
     except Exception as e:
-        print(f"  ⚠️ 링크 디코딩 예외: {type(e).__name__}: {e}")
+        print(f"  ⚠️ 링크 디코딩 실패(예외): {e}")
     return google_news_url
 
 
@@ -358,45 +404,45 @@ def fetch_news_candidates(count_per_keyword=15):
     return combined
 
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://news.google.com/",
-}
-
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://news.google.com/",
-}
+# 진단 로그를 몇 건까지 자세히 찍을지
+_FETCH_DEBUG_LIMIT = 15
+_fetch_debug_count = 0
 
 
 def fetch_full_text(url, max_chars=4000):
+    global _fetch_debug_count
+    debug = _fetch_debug_count < _FETCH_DEBUG_LIMIT
     try:
         resp = requests.get(url, timeout=8, headers=HEADERS)
+
         if resp.status_code != 200:
-            print(f"  🔍 본문 요청 실패 상세: HTTP {resp.status_code} ({url[:60]}...)")
+            if debug:
+                _fetch_debug_count += 1
+                print(f"  🔎 [진단] HTTP {resp.status_code} 응답 (url={url})")
             return ""
+
         soup = BeautifulSoup(resp.text, "html.parser")
         paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
         text = "\n".join(p for p in paragraphs if len(p) > 30)
-        if len(text) < 50:
-            page_title = soup.find("title")
-            page_title_text = page_title.get_text(strip=True) if page_title else "(제목 없음)"
-            print(f"  🔍 본문 요청 실패 상세: 응답 200이지만 본문 추출 안됨 — 실제 받은 페이지 제목: '{page_title_text}'")
+
+        if len(text) < 50 and debug:
+            _fetch_debug_count += 1
+            page_title_tag = soup.find("title")
+            page_title = page_title_tag.get_text(strip=True) if page_title_tag else "(제목 없음)"
+            final_url = resp.url  # requests가 따라간 최종 URL (리다이렉트 후)
+            print(
+                f"  🔎 [진단] 본문 추출 결과 짧음(len={len(text)}). "
+                f"페이지 title='{page_title}', 최종 URL={final_url}, "
+                f"요청 URL={url}, <p> 개수={len(paragraphs)}"
+            )
+
         return text[:max_chars]
     except Exception as e:
-        print(f"  🔍 본문 요청 실패 상세: 예외 발생 — {type(e).__name__}: {e}")
+        if debug:
+            _fetch_debug_count += 1
+            print(f"  🔎 [진단] fetch_full_text 예외: {e} (url={url})")
         return ""
+
 
 # ---------------------------------------------------------------------------
 # 2. Gemini 재작성 (google-genai SDK 사용)
@@ -610,7 +656,7 @@ FONT_URL = "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf
 KOREAN_FONT_PATH = "BlackHanSans-Regular.ttf"
 KOREAN_FONT_URL = "https://github.com/google/fonts/raw/main/ofl/blackhansans/BlackHanSans-Regular.ttf"
 
-HANGUL_PATTERN = re.compile(r"[\uAC00-\uD7A3\u3131-\u318E]")
+HANGUL_PATTERN = re.compile(r"[가-힣ㄱ-ㆎ]")
 
 
 def contains_hangul(text):

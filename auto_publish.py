@@ -360,13 +360,18 @@ def fetch_news_candidates(count_per_keyword=15):
 def fetch_full_text(url, max_chars=4000):
     try:
         resp = requests.get(url, timeout=8, headers=HEADERS)
+        if resp.status_code != 200:
+            print(f"  🔍 본문 요청 실패 상세: HTTP {resp.status_code} ({url[:60]}...)")
+            return ""
         soup = BeautifulSoup(resp.text, "html.parser")
         paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
         text = "\n".join(p for p in paragraphs if len(p) > 30)
+        if len(text) < 50:
+            print(f"  🔍 본문 요청 실패 상세: 응답은 왔지만 본문 텍스트 추출 안됨 (길이 {len(text)})")
         return text[:max_chars]
-    except Exception:
+    except Exception as e:
+        print(f"  🔍 본문 요청 실패 상세: 예외 발생 — {type(e).__name__}: {e}")
         return ""
-
 
 # ---------------------------------------------------------------------------
 # 2. Gemini 재작성 (google-genai SDK 사용)

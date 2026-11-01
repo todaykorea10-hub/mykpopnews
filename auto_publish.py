@@ -756,15 +756,26 @@ def generate_typography_card(category_name, headline_text):
 
 
 
+_group_images_logged = False
+
+
 def load_group_images():
-    """group_images.json (upload_group_images.py가 생성)을 읽어온다."""
+    """group_images.json (upload_group_images.py가 생성)을 읽어온다.
+    실행당 한 번, 그룹별 이미지 개수를 로그로 찍어서 새로 올린 이미지가
+    실제로 반영됐는지 바로 확인할 수 있게 한다."""
+    global _group_images_logged
+    data = {}
     if os.path.exists(config.GROUP_IMAGES_FILE):
         try:
             with open(config.GROUP_IMAGES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception:
-            return {}
-    return {}
+            data = {}
+    if not _group_images_logged:
+        _group_images_logged = True
+        summary = ", ".join(f"{k}:{len(v)}" for k, v in data.items())
+        print(f"  🗂️ group_images.json 로드: {summary or '(비어 있음)'}")
+    return data
 
 
 def pick_group_image_media_id(group_key, group_images):

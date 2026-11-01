@@ -1,131 +1,99 @@
 """
-그룹별로 미리 만들어둔 이미지를 워드프레스에 한 번만 업로드하고,
-그 결과(media ID)를 group_images.json에 저장하는 스크립트.
+그룹별 이미지를 워드프레스에 업로드하고 group_images.json에 '추가(병합)'한다.
 
-사용법:
-1) 이 스크립트와 같은 폴더에 "group_images" 폴더를 만들고, 그 안에
-   config.py의 GROUP_ALIASES 키와 정확히 같은 이름의 하위 폴더를 만든 뒤
-   이미지를 넣습니다. 예:
+기존 방식과 달리 group_images.json을 덮어쓰지 않고, 이미 있는 media ID는 그대로 둔 채
+새로 올린 이미지의 ID만 이어 붙인다. 이미 업로드한 파일은 건너뛴다
+(group_images_uploaded.json에 '그룹/파일명'을 기록).
 
-   group_images/
-     BTS/
-       1.jpg
-       2.jpg
-       ...
-     BLACKPINK/
-       1.jpg
-       2.jpg
+폴더 구조:
+  group_images/
+    BTS/      01.png 02.png ...
+    BLACKPINK/ ...
+폴더 이름은 config.GROUP_ALIASES의 그룹 키(BTS 등)와 똑같이 써야 한다.
 
-2) python upload_group_images.py 실행
-
-3) 이미 업로드된 파일은 건너뛰고, 새로 추가된 파일만 업로드합니다
-   (같은 파일명을 다시 넣어도 중복 업로드되지 않습니다).
-
-실행 후 auto_publish.py가 자동으로 group_images.json을 읽어서,
-해당 그룹 기사가 나올 때마다 새로 만들지 않고 이 중 하나를 재사용합니다.
+실행:  python upload_group_images.py
+끝나면 group_images.json / group_images_uploaded.json 을 GitHub에 push 해야
+GitHub Actions(클라우드)에서도 새 이미지가 반영된다.
 """
 
-import base64
 import json
+import mimetypes
 import os
 
 import requests
 
 import config
+from auto_publish import wp_auth_header
 
-LOCAL_FOLDER = "group_images"
-MAPPING_FILE = config.GROUP_IMAGES_FILE
-UPLOADED_LOG_FILE = "group_images_uploaded.json"
-
-
-def wp_auth_header():
-    token = base64.b64encode(f"{config.WP_USERNAME}:{config.WP_APP_PASSWORD}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
+IMAGES_DIR = "group_images"
+UPLOADED_LOG = "group_images_uploaded.json"
+EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
-def load_json(path, default):
+def load(path, default):
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            return default
+            pass
     return default
 
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def main():
+    group_images = load(config.GROUP_IMAGES_FILE, {})
+    uploaded = set(load(UPLOADED_LOG, []))
 
-
-def upload_media(image_bytes, filename, mime_type):
-    resp = requests.post(
-        f"{config.WP_URL}/wp-json/wp/v2/media",
-        headers={**wp_auth_header(), "Content-Disposition": f"attachment; filename={filename}", "Content-Type": mime_type},
-        data=image_bytes,
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["id"]
-
-
-def guess_mime(filename):
-    ext = filename.lower().rsplit(".", 1)[-1]
-    return {
-        "jpg": "image/jpeg", "jpeg": "image/jpeg",
-        "png": "image/png", "webp": "image/webp",
-    }.get(ext, "image/jpeg")
-
-
-def run():
-    if not os.path.isdir(LOCAL_FOLDER):
-        print(f"❌ '{LOCAL_FOLDER}' 폴더가 없습니다. 이 스크립트와 같은 위치에 만들어주세요.")
+    if not os.path.isdir(IMAGES_DIR):
+        print(f"'{IMAGES_DIR}' 폴더가 없습니다.")
         return
 
-    group_images = load_json(MAPPING_FILE, {})
-    uploaded_log = load_json(UPLOADED_LOG_FILE, {})  # {"BTS/1.jpg": media_id, ...}
-
-    valid_groups = set(config.GROUP_ALIASES.keys())
-    total_new = 0
-
-    for group_name in sorted(os.listdir(LOCAL_FOLDER)):
-        group_path = os.path.join(LOCAL_FOLDER, group_name)
-        if not os.path.isdir(group_path):
+    added = 0
+    for group in sorted(os.listdir(IMAGES_DIR)):
+        gdir = os.path.join(IMAGES_DIR, group)
+        if not os.path.isdir(gdir):
             continue
-        if group_name not in valid_groups:
-            print(f"⚠️  '{group_name}' 폴더는 config.py의 GROUP_ALIASES에 없는 이름입니다. "
-                  f"철자를 맞추거나 GROUP_ALIASES에 추가해주세요. (건너뜀)")
+        if group not in config.GROUP_ALIASES:
+            print(f"⚠️ 폴더 '{group}'는 GROUP_ALIASES에 없는 이름이라 건너뜀")
             continue
-
-        group_images.setdefault(group_name, [])
-        print(f"\n📁 {group_name}")
-
-        for filename in sorted(os.listdir(group_path)):
-            file_key = f"{group_name}/{filename}"
-            file_path = os.path.join(group_path, filename)
-            if not os.path.isfile(file_path):
+        for fname in sorted(os.listdir(gdir)):
+            if not fname.lower().endswith(EXTS):
                 continue
-            if file_key in uploaded_log:
-                print(f"  - {filename} (이미 업로드됨, 건너뜀)")
+            key = f"{group}/{fname}"
+            if key in uploaded:
                 continue
+            mime = mimetypes.guess_type(fname)[0] or "image/png"
+            with open(os.path.join(gdir, fname), "rb") as f:
+                data = f.read()
+            resp = requests.post(
+                f"{config.WP_URL}/wp-json/wp/v2/media",
+                headers={
+                    **wp_auth_header(),
+                    "Content-Disposition": f'attachment; filename="{group}-{fname}"',
+                    "Content-Type": mime,
+                },
+                data=data,
+                timeout=60,
+            )
+            if resp.status_code not in (200, 201):
+                print(f"❌ {key} 업로드 실패: {resp.status_code} {resp.text[:120]}")
+                continue
+            media_id = resp.json()["id"]
+            group_images.setdefault(group, [])
+            if media_id not in group_images[group]:
+                group_images[group].append(media_id)
+            uploaded.add(key)
+            added += 1
+            print(f"✔ {key} → media ID {media_id}")
 
-            try:
-                with open(file_path, "rb") as f:
-                    image_bytes = f.read()
-                media_id = upload_media(image_bytes, filename, guess_mime(filename))
-                uploaded_log[file_key] = media_id
-                group_images[group_name].append(media_id)
-                total_new += 1
-                print(f"  ✔ {filename} → media id {media_id}")
-            except Exception as e:
-                print(f"  → {filename} 업로드 실패: {e}")
+    with open(config.GROUP_IMAGES_FILE, "w", encoding="utf-8") as f:
+        json.dump(group_images, f, ensure_ascii=False, indent=2)
+    with open(UPLOADED_LOG, "w", encoding="utf-8") as f:
+        json.dump(sorted(uploaded), f, ensure_ascii=False, indent=2)
 
-    save_json(MAPPING_FILE, group_images)
-    save_json(UPLOADED_LOG_FILE, uploaded_log)
-
-    print(f"\n🏁 완료. 새로 업로드된 이미지 {total_new}장.")
-    print(f"   그룹별 보유 이미지 수: " + ", ".join(f"{k}={len(v)}" for k, v in group_images.items() if v))
+    print(f"\n새로 추가 {added}장. 그룹별 현재 개수: "
+          + ", ".join(f"{k}:{len(v)}" for k, v in group_images.items()))
 
 
 if __name__ == "__main__":
-    run()
+    main()

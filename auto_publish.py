@@ -779,25 +779,44 @@ def load_group_images():
 
 
 def pick_group_image_media_id(group_key, group_images):
-    """해당 그룹에 미리 업로드해둔 이미지 중 하나의 미디어 ID를 고른다."""
+    """그룹 이미지 중 '가장 적게 쓰인' 이미지를 고른다 (동률이면 무작위).
+    새로 추가한 이미지는 사용 횟수가 0이라 다른 이미지와 횟수가 같아질 때까지
+    우선 사용되고, 이후엔 모든 이미지가 고르게 돌아간다.
+    사용 횟수는 group_image_rotation.json의 "__usage__" 항목에 저장
+    (기존 파일 이름 그대로라 GitHub Actions 커밋 목록을 바꿀 필요 없음)."""
     media_ids = group_images.get(group_key)
     if not media_ids:
         return None
-    if config.GROUP_IMAGE_SELECTION == "sequential":
-        state_file = "group_image_rotation.json"
+
+    state_file = "group_image_rotation.json"
+    state = {}
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            state = {}
+    if not isinstance(state, dict):
         state = {}
-        if os.path.exists(state_file):
-            try:
-                with open(state_file, "r", encoding="utf-8") as f:
-                    state = json.load(f)
-            except Exception:
-                state = {}
-        idx = state.get(group_key, 0) % len(media_ids)
-        state[group_key] = idx + 1
-        with open(state_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        return media_ids[idx]
-    return random.choice(media_ids)
+
+    usage_all = state.get("__usage__")
+    if not isinstance(usage_all, dict):
+        usage_all = {}
+    usage = usage_all.get(group_key)
+    if not isinstance(usage, dict):
+        usage = {}
+
+    counts = {mid: usage.get(str(mid), 0) for mid in media_ids}
+    least = min(counts.values())
+    chosen = random.choice([mid for mid, c in counts.items() if c == least])
+
+    usage[str(chosen)] = counts[chosen] + 1
+    # 삭제된 이미지의 기록은 정리
+    usage_all[group_key] = {str(mid): usage.get(str(mid), 0) for mid in media_ids}
+    state["__usage__"] = usage_all
+    with open(state_file, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    return chosen
 
 
 def wp_auth_header():

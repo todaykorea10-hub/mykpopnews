@@ -38,6 +38,7 @@ import random
 import re
 import time
 import datetime
+import html
 from urllib.parse import urlparse
 
 import requests
@@ -188,42 +189,22 @@ def detect_group(text):
     return None
 
 
-# 진단 로그를 몇 건까지 자세히 찍을지 (너무 많이 찍히면 로그가 지저분해짐)
-_RESOLVE_DEBUG_LIMIT = 8
-_resolve_debug_count = 0
-
-
 def resolve_real_url(google_news_url):
-    """구글 뉴스 RSS의 리다이렉트 URL을 실제 언론사 URL로 변환. 실패 시 원래 URL 반환."""
-    global _resolve_debug_count
+    """구글 뉴스 RSS의 리다이렉트 URL을 실제 언론사 URL로 변환. 실패 시 원래 URL 반환.
+    gnewsdecoder는 {'success': True, 'decoded_url': ...} 형태로 반환한다
+    (버전에 따라 'status' 키일 수도 있어 둘 다 처리)."""
     try:
         result = gnewsdecoder(google_news_url, interval=1)
-
-        if _resolve_debug_count < _RESOLVE_DEBUG_LIMIT:
-            _resolve_debug_count += 1
-            print(f"  🔎 [진단] gnewsdecoder 원본 반환값: {result!r}")
-
         if isinstance(result, dict):
-            # 라이브러리 버전에 따라 status/decoded_url 대신 다른 키를 쓸 수도 있으니
-            # 가능한 키 이름들을 넓게 시도
-            decoded = (
-                result.get("decoded_url")
-                or result.get("url")
-                or result.get("real_url")
-            )
-            status_ok = result.get("status")
-            if status_ok is None:
-                # status 키 자체가 없는 버전 — decoded 값이 있으면 성공으로 간주
-                status_ok = bool(decoded)
-            if status_ok and decoded:
+            decoded = result.get("decoded_url")
+            ok = result.get("success", result.get("status"))
+            if ok is None:
+                ok = bool(decoded)
+            if ok and decoded:
                 return decoded
-            else:
-                print(
-                    f"  ⚠️ 링크 디코딩 실패(빈 결과): status={result.get('status')!r}, "
-                    f"decoded_url={result.get('decoded_url')!r}, 사용된 키들={list(result.keys())}"
-                )
+            print(f"  ⚠️ 링크 디코딩 실패: {result!r}")
         else:
-            print(f"  ⚠️ 링크 디코딩 실패: 예상치 못한 반환 타입 {type(result)} → {result!r}")
+            print(f"  ⚠️ 링크 디코딩 실패: 예상치 못한 반환값 {result!r}")
     except Exception as e:
         print(f"  ⚠️ 링크 디코딩 실패(예외): {e}")
     return google_news_url
@@ -467,6 +448,118 @@ STRUCTURE_STYLES = [
     "Open with a short 1-2 sentence italicized (<i>) hook/teaser before the first subtitle, then continue with prose paragraphs.",
     "Include a short pull-quote style callout using <blockquote> summarizing the core takeaway, in addition to prose paragraphs.",
 ]
+
+
+# ---------------------------------------------------------------------------
+# 2-B. Claude 번역 (원문에 충실한 영어 번역) — config.USE_CLAUDE_TRANSLATION=True 일 때 사용
+# ---------------------------------------------------------------------------
+
+_claude_client = None
+
+
+def get_claude_client():
+    global _claude_client
+    if _claude_client is None:
+        import anthropic
+        api_key = getattr(config, "ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+        _claude_client = anthropic.Anthropic(api_key=api_key, max_retries=4)
+    return _claude_client
+
+
+CLAUDE_TRANSLATE_TOOL = {
+    "name": "submit_translation",
+    "description": "Submit the English translation of the Korean news article, or mark it as skipped.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "skip": {
+                "type": "boolean",
+                "description": "true if the text is not a real news article about K-pop (menu text, list page, error page, unrelated topic).",
+            },
+            "skip_reason": {"type": "string"},
+            "title": {
+                "type": "string",
+                "description": "Faithful, natural English translation of the headline. No clickbait, under ~90 characters.",
+            },
+            "paragraphs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Plain-text paragraphs (up to ~400 words total) translating the article faithfully, following the article's own paragraph order. No HTML.",
+            },
+            "category": {
+                "type": "string",
+                "enum": ["Comeback", "Chart", "Tour/Concert", "Photoshoot/Interview", "Rumor/Issue", "Global Reaction"],
+            },
+            "slug": {
+                "type": "string",
+                "description": "Short SEO-friendly URL slug, 3-6 words, lowercase, hyphen-separated (e.g. 'bts-swim-lawsuit-dismissed').",
+            },
+            "meta_description": {
+                "type": "string",
+                "description": "Factual one-sentence summary for search results, 140-155 characters, no quotes or hashtags.",
+            },
+            "card_label": {
+                "type": "string",
+                "description": "2-5 word label for a graphic card summarizing the topic, e.g. 'BTS SWIM LAWSUIT'.",
+            },
+        },
+        "required": ["skip"],
+    },
+}
+
+CLAUDE_TRANSLATE_SYSTEM = """You translate Korean K-pop news into English for a global fan audience.
+
+This is a TRANSLATION task, not a writing task:
+- Translate only what the article says. Do not add facts, background, analysis, opinions, predictions, or fan-reaction commentary that is not in the source text.
+- Translate as faithfully as natural English allows: follow the original sentence order and paragraph order, keep the original meaning, nuance and level of detail, and translate every fact, number, date, name and quoted statement that appears (quotes stay attributed to the same speaker, translated accurately). Do not paraphrase into your own wording and do not summarize away details.
+- Length: up to about 400 words. If the article is longer than that, translate the most important parts in their original order and leave out the rest. Leave out reporter bylines, photo captions, ads, 'related articles' and other non-article text.
+- Keep names, numbers, dates, titles of songs/albums, and chart positions exactly as in the source. Use the standard English spelling of artist and group names (e.g. BTS, Jungkook, BLACKPINK).
+- Neutral news tone. No emojis, no hashtags, no HTML.
+- If the provided text is not an actual news article about K-pop, call the tool with skip=true.
+Always respond by calling submit_translation."""
+
+
+def translate_with_claude(title, raw_text, source_url=""):
+    """한국어 기사를 Claude로 원문에 충실하게 영어 번역. 번역 불가(기사 아님)면 None 반환.
+    반환 dict는 rewrite_with_gemini와 같은 키(title, body_html, category, slug,
+    meta_description, card_label)를 가진다."""
+    response = get_claude_client().messages.create(
+        model=getattr(config, "CLAUDE_MODEL", "claude-sonnet-5"),
+        max_tokens=2500,
+        system=CLAUDE_TRANSLATE_SYSTEM,
+        tools=[CLAUDE_TRANSLATE_TOOL],
+        tool_choice={"type": "tool", "name": "submit_translation"},
+        messages=[{"role": "user", "content": f"Korean headline:\n{title}\n\nArticle text:\n{raw_text}"}],
+    )
+    data = None
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "submit_translation":
+            data = block.input
+            break
+    if not data:
+        raise ValueError("Claude가 번역 결과를 반환하지 않았습니다.")
+    if data.get("skip") or not data.get("title") or not data.get("paragraphs"):
+        print(f"  → 번역 건너뜀: {data.get('skip_reason', '기사 아님')}")
+        return None
+
+    body = "".join(f"<p>{html.escape(p)}</p>" for p in data["paragraphs"])
+    if source_url:
+        body += (
+            '<p style="color:gray;font-size:0.9em;">Source: '
+            f'<a href="{html.escape(source_url, quote=True)}" target="_blank" rel="noopener">'
+            "Read the original Korean article</a>. This post is an English translation of the key points "
+            "of that article. All rights to the original reporting belong to its publisher.</p>"
+        )
+    return {
+        "title": data["title"].strip(),
+        "body_html": body,
+        "category": data.get("category") or config.DEFAULT_CATEGORY,
+        "slug": data.get("slug"),
+        "meta_description": data.get("meta_description"),
+        "card_label": data.get("card_label") or data["title"],
+    }
 
 
 def rewrite_with_gemini(title, raw_text, source_name, recent_titles):
@@ -946,10 +1039,16 @@ def run():
             continue
 
         try:
-            recent_titles = get_recent_titles_for_dedup()
-            rewritten = rewrite_with_gemini(item["title"], full_text, "", recent_titles)
+            if getattr(config, "USE_CLAUDE_TRANSLATION", True):
+                rewritten = translate_with_claude(item["title"], full_text, real_link)
+                if rewritten is None:  # 기사가 아니라서 번역하지 않음 → 다시 시도하지 않도록 기록
+                    save_posted_link(item["link"])
+                    continue
+            else:
+                recent_titles = get_recent_titles_for_dedup()
+                rewritten = rewrite_with_gemini(item["title"], full_text, "", recent_titles)
         except Exception as e:
-            print(f"  → Gemini 재작성 실패: {e}")
+            print(f"  → 번역/재작성 실패: {e}")
             continue
 
         new_title = rewritten["title"]
@@ -976,7 +1075,7 @@ def run():
             group_images = load_group_images()
             media_id = pick_group_image_media_id(detected_group, group_images)
             if media_id:
-                print(f"  🖼️ 그룹 사전 제작 이미지 사용: {detected_group}")
+                print(f"  🖼️ 그룹 사전 제작 이미지 사용: {detected_group} (media ID {media_id})")
 
         if not media_id:
             try:

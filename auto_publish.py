@@ -389,7 +389,7 @@ _FETCH_DEBUG_LIMIT = 15
 _fetch_debug_count = 0
 
 
-def fetch_full_text(url, max_chars=4000):
+def fetch_full_text(url, max_chars=4000, _canonical_tried=False):
     global _fetch_debug_count
     debug = _fetch_debug_count < _FETCH_DEBUG_LIMIT
     try:
@@ -415,6 +415,14 @@ def fetch_full_text(url, max_chars=4000):
                 f"페이지 title='{page_title}', 최종 URL={final_url}, "
                 f"요청 URL={url}, <p> 개수={len(paragraphs)}"
             )
+
+        # AMP 등 본문이 거의 비어 있으면, 페이지가 알려주는 원래(canonical) 주소로 한 번 더 시도
+        if len(text) < 50 and not _canonical_tried:
+            canon = soup.find("link", rel="canonical")
+            canon_href = (canon.get("href") or "").strip() if canon else ""
+            if canon_href.startswith("http") and canon_href.rstrip("/") != url.rstrip("/"):
+                print(f"  ↪️ canonical 주소로 재시도: {canon_href}")
+                return fetch_full_text(canon_href, max_chars, _canonical_tried=True)
 
         return text[:max_chars]
     except Exception as e:
@@ -500,7 +508,8 @@ def rewrite_with_gemini(title, raw_text, source_name, recent_titles, source_url=
           "category": "One of: Comeback | Chart | Tour/Concert | Photoshoot/Interview | Rumor/Issue | Global Reaction",
           "slug": "short SEO-friendly URL slug, 3-6 words, lowercase, hyphen-separated (e.g. 'bts-swim-lawsuit-dismissed')",
           "meta_description": "Factual one-sentence summary for search results, 140-155 characters, no quotes, no hashtags",
-          "card_label": "2-5 word label for a graphic card (no photo) summarizing the topic, e.g. 'BTS SWIM LAWSUIT'"
+          "card_label": "2-5 word label for a graphic card (no photo) summarizing the topic, e.g. 'BTS SWIM LAWSUIT'",
+          "same_story": "true if the Korean article text is actually about the same news story as the Korean source title, false if it is about a different story or is not a news article (then the other fields may be left short)"
         }}"""
     else:
         prompt = f"""당신은 K-pop 전문 뉴스 에디터입니다. 아래 원문 정보를 참고하여
@@ -912,6 +921,7 @@ def run():
             continue
 
         print(f"\n[기사 후보 {index}] {item['title']}")
+        print(f"  🔗 {real_link}")
 
         full_text = fetch_full_text(real_link)
         if len(full_text) < 50:
@@ -923,6 +933,12 @@ def run():
             rewritten = rewrite_with_gemini(item["title"], full_text, "", recent_titles, real_link)
         except Exception as e:
             print(f"  → Gemini 재작성 실패: {e}")
+            continue
+
+        same = rewritten.get("same_story")
+        if same is False or (isinstance(same, str) and same.strip().lower() == "false"):
+            print("  → 제목과 본문이 서로 다른 기사로 판단, 건너뜀")
+            save_posted_link(item["link"])
             continue
 
         new_title = rewritten["title"]

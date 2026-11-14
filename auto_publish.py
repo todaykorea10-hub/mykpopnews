@@ -484,9 +484,12 @@ def rewrite_with_gemini(title, raw_text, source_name, recent_titles, source_url=
           to the same speaker and are translated accurately.
         - Do NOT add facts, background, analysis, opinions, predictions or fan-reaction commentary that is not
           in the source text. Do NOT paraphrase into your own wording and do NOT summarize away details.
-        - Length: up to about 400 words. If the article is longer than that, translate the most important
-          parts in their original order and leave out the rest. Leave out reporter bylines, photo captions,
-          ads, 'related articles' and other non-article text.
+        - Translate the article from its first paragraph onward, in order, sentence by sentence, without
+          skipping, merging or condensing sentences. Do not shorten it: if the article is under the limit,
+          the translation must cover the entire article text.
+        - Length limit: about 400 words. Only if the article is longer than that, stop at that limit after
+          a complete paragraph. Leave out reporter bylines, photo captions, ads, 'related articles' and
+          other non-article text.
         - Keep names, numbers, dates, song/album titles and chart positions exactly as in the source. Use the
           standard English spelling of artist and group names (e.g. BTS, Jungkook, BLACKPINK).
         - Neutral news tone. No emojis, no hashtags.
@@ -995,7 +998,9 @@ def run():
             published += 1
 
             try:
-                post_to_twitter(new_title, result.get("link"), image_bytes)
+                # X 자동 게시는 config.AUTO_POST_TWITTER=True 로 명시했을 때만 시도 (기본: 시도 안 함)
+                if getattr(config, "AUTO_POST_TWITTER", False):
+                    post_to_twitter(new_title, result.get("link"), image_bytes)
                 post_to_instagram(
                     f"{new_title}\n\n{rewritten.get('meta_description', '')}\n\n#{(detected_group or '').replace(' ', '')} #kpop",
                     get_media_url(media_id),

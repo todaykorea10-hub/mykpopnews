@@ -38,7 +38,6 @@ import random
 import re
 import time
 import datetime
-import html
 from urllib.parse import urlparse
 
 import requests
@@ -450,119 +449,7 @@ STRUCTURE_STYLES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# 2-B. Claude 번역 (원문에 충실한 영어 번역) — config.USE_CLAUDE_TRANSLATION=True 일 때 사용
-# ---------------------------------------------------------------------------
-
-_claude_client = None
-
-
-def get_claude_client():
-    global _claude_client
-    if _claude_client is None:
-        import anthropic
-        api_key = getattr(config, "ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
-        _claude_client = anthropic.Anthropic(api_key=api_key, max_retries=4)
-    return _claude_client
-
-
-CLAUDE_TRANSLATE_TOOL = {
-    "name": "submit_translation",
-    "description": "Submit the English translation of the Korean news article, or mark it as skipped.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "skip": {
-                "type": "boolean",
-                "description": "true if the text is not a real news article about K-pop (menu text, list page, error page, unrelated topic).",
-            },
-            "skip_reason": {"type": "string"},
-            "title": {
-                "type": "string",
-                "description": "Faithful, natural English translation of the headline. No clickbait, under ~90 characters.",
-            },
-            "paragraphs": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Plain-text paragraphs (up to ~400 words total) translating the article faithfully, following the article's own paragraph order. No HTML.",
-            },
-            "category": {
-                "type": "string",
-                "enum": ["Comeback", "Chart", "Tour/Concert", "Photoshoot/Interview", "Rumor/Issue", "Global Reaction"],
-            },
-            "slug": {
-                "type": "string",
-                "description": "Short SEO-friendly URL slug, 3-6 words, lowercase, hyphen-separated (e.g. 'bts-swim-lawsuit-dismissed').",
-            },
-            "meta_description": {
-                "type": "string",
-                "description": "Factual one-sentence summary for search results, 140-155 characters, no quotes or hashtags.",
-            },
-            "card_label": {
-                "type": "string",
-                "description": "2-5 word label for a graphic card summarizing the topic, e.g. 'BTS SWIM LAWSUIT'.",
-            },
-        },
-        "required": ["skip"],
-    },
-}
-
-CLAUDE_TRANSLATE_SYSTEM = """You translate Korean K-pop news into English for a global fan audience.
-
-This is a TRANSLATION task, not a writing task:
-- Translate only what the article says. Do not add facts, background, analysis, opinions, predictions, or fan-reaction commentary that is not in the source text.
-- Translate as faithfully as natural English allows: follow the original sentence order and paragraph order, keep the original meaning, nuance and level of detail, and translate every fact, number, date, name and quoted statement that appears (quotes stay attributed to the same speaker, translated accurately). Do not paraphrase into your own wording and do not summarize away details.
-- Length: up to about 400 words. If the article is longer than that, translate the most important parts in their original order and leave out the rest. Leave out reporter bylines, photo captions, ads, 'related articles' and other non-article text.
-- Keep names, numbers, dates, titles of songs/albums, and chart positions exactly as in the source. Use the standard English spelling of artist and group names (e.g. BTS, Jungkook, BLACKPINK).
-- Neutral news tone. No emojis, no hashtags, no HTML.
-- If the provided text is not an actual news article about K-pop, call the tool with skip=true.
-Always respond by calling submit_translation."""
-
-
-def translate_with_claude(title, raw_text, source_url=""):
-    """한국어 기사를 Claude로 원문에 충실하게 영어 번역. 번역 불가(기사 아님)면 None 반환.
-    반환 dict는 rewrite_with_gemini와 같은 키(title, body_html, category, slug,
-    meta_description, card_label)를 가진다."""
-    response = get_claude_client().messages.create(
-        model=getattr(config, "CLAUDE_MODEL", "claude-sonnet-5"),
-        max_tokens=2500,
-        system=CLAUDE_TRANSLATE_SYSTEM,
-        tools=[CLAUDE_TRANSLATE_TOOL],
-        tool_choice={"type": "tool", "name": "submit_translation"},
-        messages=[{"role": "user", "content": f"Korean headline:\n{title}\n\nArticle text:\n{raw_text}"}],
-    )
-    data = None
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_translation":
-            data = block.input
-            break
-    if not data:
-        raise ValueError("Claude가 번역 결과를 반환하지 않았습니다.")
-    if data.get("skip") or not data.get("title") or not data.get("paragraphs"):
-        print(f"  → 번역 건너뜀: {data.get('skip_reason', '기사 아님')}")
-        return None
-
-    body = "".join(f"<p>{html.escape(p)}</p>" for p in data["paragraphs"])
-    if source_url:
-        body += (
-            '<p style="color:gray;font-size:0.9em;">Source: '
-            f'<a href="{html.escape(source_url, quote=True)}" target="_blank" rel="noopener">'
-            "Read the original Korean article</a>. This post is an English translation of the key points "
-            "of that article. All rights to the original reporting belong to its publisher.</p>"
-        )
-    return {
-        "title": data["title"].strip(),
-        "body_html": body,
-        "category": data.get("category") or config.DEFAULT_CATEGORY,
-        "slug": data.get("slug"),
-        "meta_description": data.get("meta_description"),
-        "card_label": data.get("card_label") or data["title"],
-    }
-
-
-def rewrite_with_gemini(title, raw_text, source_name, recent_titles):
+def rewrite_with_gemini(title, raw_text, source_name, recent_titles, source_url=""):
     angle = random.choice(ANGLE_STYLES)
     structure = random.choice(STRUCTURE_STYLES)
 
@@ -579,55 +466,41 @@ def rewrite_with_gemini(title, raw_text, source_name, recent_titles):
             recent_block = f"\n[최근 발행한 제목 목록 — 같은 각도로 반복하지 말 것]\n{joined}\n"
 
     if config.CONTENT_LANGUAGE == "en":
-        prompt = f"""You are a K-pop news editor writing for a global English-speaking fan audience.
-        Based on the Korean source info below, write an ORIGINAL, IN-DEPTH English-language article.
+        prompt = f"""You are a professional Korean-to-English news translator for a global K-pop fan audience.
+        This is a TRANSLATION task, not a writing task.
 
-        CRITICAL REQUIREMENTS (this content will be reviewed for ad-network quality standards,
-        so originality and depth matter a lot):
-        - Target length: at least 1,000 words total. Do not pad with filler — earn the length
-          through genuine added analysis, not repetition.
-        - This must NOT read like a summary or translation of the source. Structure it with
-          real editorial depth across these angles, each getting real substance:
-          1) A strong lead paragraph stating what happened.
-          2) Background/context: how this fits the artist's or group's broader career trajectory
-             or K-pop industry trends.
-          3) Original analysis: your own interpretation of why this matters, comparisons to
-             similar past moments in K-pop, or what it signals about industry direction. Do not
-             invent specific facts, statistics, or quotes not present in the source — analysis
-             should be framed as interpretation ("this suggests", "this mirrors a pattern seen
-             when...") rather than presented as new facts.
-          4) General fan/community sentiment: describe how this type of news typically resonates
-             with fandoms, in general terms — do not invent specific quotes attributed to named
-             real individuals (fans, artists, or officials) who did not actually say them.
-          5) A forward-looking closing on what this could mean next.
-        - Keep all facts accurate to the source; only the analysis/interpretation sections should
-          go beyond the raw source material, clearly framed as commentary, not fact.
-
-        [Mandatory angle for this specific article — commit to this as the main lens throughout,
-        don't just mention it in passing]
-        {angle}
-
-        [Mandatory structural element — include this in addition to the 5-part structure above]
-        {structure}
+        RULES:
+        - Translate the Korean article text below as faithfully as natural English allows. Follow the
+          original sentence order and paragraph order, and keep the original meaning, nuance and level of detail.
+        - Translate every fact, number, date, name and quoted statement that appears. Quotes stay attributed
+          to the same speaker and are translated accurately.
+        - Do NOT add facts, background, analysis, opinions, predictions or fan-reaction commentary that is not
+          in the source text. Do NOT paraphrase into your own wording and do NOT summarize away details.
+        - Length: up to about 400 words. If the article is longer than that, translate the most important
+          parts in their original order and leave out the rest. Leave out reporter bylines, photo captions,
+          ads, 'related articles' and other non-article text.
+        - Keep names, numbers, dates, song/album titles and chart positions exactly as in the source. Use the
+          standard English spelling of artist and group names (e.g. BTS, Jungkook, BLACKPINK).
+        - Neutral news tone. No emojis, no hashtags.
 
         [Korean source title] {title}
-        [Source outlet] {source_name}
-        [Source content excerpt] {raw_text}
-        {recent_block}
+        [Korean article text]
+        {raw_text}
+
         [CRITICAL JSON SAFETY — your output must be valid JSON that a strict parser can read]
         - Never use straight double quotes (") inside any field's text. Use single quotes (')
-          for any quoted phrase or title mentioned within the body, e.g. Jennie's new track 'Antifreeze'.
+          for quoted statements and titles, e.g. he said 'we are grateful' about the track 'Antifreeze'.
         - Do not include literal line breaks inside string values — write body_html as one
           continuous string using <p> tags to separate paragraphs, not actual newlines.
 
         Respond with ONLY this JSON structure (no extra text, no code fences):
         {{
-          "title": "Catchy, trendy English title for global K-pop fans (under ~70 characters), reflecting the mandatory angle above rather than just restating the raw headline",
-          "body_html": "Original English article, at least 1000 words, 8-12 paragraphs each wrapped in <p> tags, following the 5-part structure above with real analytical depth, plus 2-3 <h3> subheadings to break up sections, and including the mandatory structural element",
+          "title": "Faithful, natural English translation of the Korean headline (under ~90 characters), no clickbait",
+          "body_html": "The faithful English translation of the article, each paragraph wrapped in <p> tags, following the article's own paragraph order, no headings",
           "category": "One of: Comeback | Chart | Tour/Concert | Photoshoot/Interview | Rumor/Issue | Global Reaction",
-          "slug": "short SEO-friendly URL slug, 3-6 words, lowercase, hyphen-separated, no stopwords like 'the/a/of', capturing the core topic (e.g. 'ive-liz-red-carpet-comeback')",
-          "meta_description": "SEO meta description for Google search results, 140-155 characters, summarizing the article's hook in one compelling sentence (no quotes, no hashtags)",
-          "card_label": "2-5 word punchy phrase for a graphic card (no photo), capturing the core topic in caps-friendly words (e.g. 'JENNIE GOES MINIMAL', 'BTS TOUR RECORD')"
+          "slug": "short SEO-friendly URL slug, 3-6 words, lowercase, hyphen-separated (e.g. 'bts-swim-lawsuit-dismissed')",
+          "meta_description": "Factual one-sentence summary for search results, 140-155 characters, no quotes, no hashtags",
+          "card_label": "2-5 word label for a graphic card (no photo) summarizing the topic, e.g. 'BTS SWIM LAWSUIT'"
         }}"""
     else:
         prompt = f"""당신은 K-pop 전문 뉴스 에디터입니다. 아래 원문 정보를 참고하여
@@ -693,6 +566,13 @@ def rewrite_with_gemini(title, raw_text, source_name, recent_titles):
         raise ValueError("Gemini가 올바른 JSON을 반환하지 않았습니다 (재시도 후에도 실패).")
 
     result["body_html"] = strip_stray_images(result.get("body_html", ""))
+    if source_url and config.CONTENT_LANGUAGE == "en":
+        result["body_html"] += (
+            '<p style="color:gray;font-size:0.9em;">Source: '
+            f'<a href="{source_url}" target="_blank" rel="noopener">Read the original Korean article</a>. '
+            "This post is an English translation of the key points of that article. "
+            "All rights to the original reporting belong to its publisher.</p>"
+        )
     return result
 
 
@@ -1039,16 +919,10 @@ def run():
             continue
 
         try:
-            if getattr(config, "USE_CLAUDE_TRANSLATION", True):
-                rewritten = translate_with_claude(item["title"], full_text, real_link)
-                if rewritten is None:  # 기사가 아니라서 번역하지 않음 → 다시 시도하지 않도록 기록
-                    save_posted_link(item["link"])
-                    continue
-            else:
-                recent_titles = get_recent_titles_for_dedup()
-                rewritten = rewrite_with_gemini(item["title"], full_text, "", recent_titles)
+            recent_titles = get_recent_titles_for_dedup()
+            rewritten = rewrite_with_gemini(item["title"], full_text, "", recent_titles, real_link)
         except Exception as e:
-            print(f"  → 번역/재작성 실패: {e}")
+            print(f"  → Gemini 재작성 실패: {e}")
             continue
 
         new_title = rewritten["title"]

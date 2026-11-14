@@ -69,7 +69,7 @@ HEADERS = {
 VIDEO_DOMAINS = ("youtube.com", "youtu.be", "m.youtube.com")
 
 NON_ARTICLE_TITLE_PATTERNS = re.compile(
-    r"\[K-Fancam\]|\[K-Choreo|Facecam|얼빡직캠|\[Playlist\]|Music Bank\]|"
+    r"\[AI연예가\]|\[K-Fancam\]|\[K-Choreo|Facecam|얼빡직캠|\[Playlist\]|Music Bank\]|"
     r"포토슬라이드|포토\s?갤러리|화보\s?슬라이드|슬라이드쇼|\[\w*포토\]|\[화보\]|"
     r"Weverse\s.*(Image|Media)|커뮤니티의?\s?투고|コミュニティの投稿",
     re.IGNORECASE,

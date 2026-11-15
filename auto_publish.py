@@ -385,6 +385,64 @@ def fetch_news_candidates(count_per_keyword=15):
 
 
 # 진단 로그를 몇 건까지 자세히 찍을지
+# 기사 본문 컨테이너로 자주 쓰이는 선택자 (한국 언론사 CMS 기준, 위에서부터 시도)
+ARTICLE_BODY_SELECTORS = [
+    "[itemprop=articleBody]", "#articleBody", "#article_body", "#articeBody",
+    ".article_body", ".article-body", ".articleBody", "#newsct_article", "#dic_area",
+    "#article-view-content-div", ".news_body", ".newsct_article", "#CmAdContent",
+    ".view_con", ".article_txt", ".article_view", "#textBody", ".news_text",
+    ".art_txt", "#newsContent", "#articleText", ".atc-body", ".content_view",
+    "#news_body_area", ".read_body", ".view_cont",
+    "[id*=article_body]", "[class*=article_body]", "[class*=articleBody]", "[class*=article-body]",
+    "article",
+]
+
+
+def _clean_lines(text, min_len=20):
+    lines = [ln.strip() for ln in text.split("\n")]
+    return "\n".join(ln for ln in lines if len(ln) >= min_len)
+
+
+def extract_article_text(soup, paragraphs):
+    """기사 본문 추출. 1) JSON-LD articleBody 2) 본문 컨테이너(<br>로 줄바꿈된 본문 포함)
+    3) 기존 방식(<p> 중 30자 초과)을 비교해 가장 충실한 것을 사용."""
+    # 1) JSON-LD (스크립트를 지우기 전에 먼저 읽는다)
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or tag.get_text() or "")
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for it in items:
+            if isinstance(it, dict):
+                body = it.get("articleBody")
+                if isinstance(body, str) and len(body.strip()) >= 200:
+                    return BeautifulSoup(body, "html.parser").get_text("\n", strip=True)
+
+    for t in soup(["script", "style", "noscript"]):
+        t.decompose()
+
+    # 2) 본문 컨테이너: 위 선택자 중 충분한 길이가 나오는 첫 번째
+    container_text = ""
+    for sel in ARTICLE_BODY_SELECTORS:
+        try:
+            els = soup.select(sel)
+        except Exception:
+            continue
+        for el in els:
+            cand = _clean_lines(el.get_text("\n", strip=True))
+            if len(cand) >= 200:
+                container_text = cand
+                break
+        if container_text:
+            break
+
+    # 3) 기존 방식
+    p_text = "\n".join(p for p in paragraphs if len(p) > 30)
+
+    return container_text if len(container_text) > len(p_text) else p_text
+
+
 _FETCH_DEBUG_LIMIT = 15
 _fetch_debug_count = 0
 
@@ -403,7 +461,7 @@ def fetch_full_text(url, max_chars=4000, _canonical_tried=False):
 
         soup = BeautifulSoup(resp.text, "html.parser")
         paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-        text = "\n".join(p for p in paragraphs if len(p) > 30)
+        text = extract_article_text(soup, paragraphs)
 
         if len(text) < 50 and debug:
             _fetch_debug_count += 1

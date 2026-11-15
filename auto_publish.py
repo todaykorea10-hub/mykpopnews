@@ -384,9 +384,6 @@ def fetch_news_candidates(count_per_keyword=15):
     return combined
 
 
-# 번역할 본문이 이보다 짧으면(리드 한 문장만 잡힌 경우 등) 발행하지 않고 건너뜀
-MIN_ARTICLE_CHARS = 300
-
 # 진단 로그를 몇 건까지 자세히 찍을지
 _FETCH_DEBUG_LIMIT = 15
 _fetch_debug_count = 0
@@ -407,23 +404,6 @@ def fetch_full_text(url, max_chars=4000, _canonical_tried=False):
         soup = BeautifulSoup(resp.text, "html.parser")
         paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
         text = "\n".join(p for p in paragraphs if len(p) > 30)
-
-        # <p> 태그만으로는 본문 일부(리드 한 문장 등)만 잡히는 사이트가 많아서,
-        # 기사 본문 컨테이너(네이버/다음/일반 article)에서도 추출해 더 긴 쪽을 사용
-        for sel in ("#dic_area", "#newsct_article", "#articleBodyContents", "#harmonyContainer",
-                    "div.article_view", "#mArticle", "[itemprop=articleBody]", "#articleBody",
-                    "#article-view-content-div", "div.article-body", "div.news_body", "article"):
-            node = soup.select_one(sel)
-            if not node:
-                continue
-            for br in node.find_all("br"):
-                br.replace_with("\n")
-            for junk in node.find_all(["script", "style", "figure", "figcaption", "aside"]):
-                junk.decompose()
-            lines = [ln.strip() for ln in node.get_text("\n").split("\n")]
-            cand = "\n".join(ln for ln in lines if len(ln) > 30)
-            if len(cand) > len(text):
-                text = cand
 
         if len(text) < 50 and debug:
             _fetch_debug_count += 1
@@ -947,8 +927,9 @@ def run():
         print(f"  🔗 {real_link}")
 
         full_text = fetch_full_text(real_link)
-        if len(full_text) < MIN_ARTICLE_CHARS:
-            print(f"  → 본문 확보 실패/너무 짧음({len(full_text)}자), 건너뜀")
+        min_chars = getattr(config, "MIN_BODY_CHARS", 300)
+        if len(full_text) < min_chars:
+            print(f"  → 본문이 너무 짧아(len={len(full_text)}) 건너뜀 (사진 기사/본문 확보 실패)")
             continue
 
         try:

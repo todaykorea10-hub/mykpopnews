@@ -113,9 +113,9 @@ def load_posted_titles():
     normalized = []
     for entry in raw:
         if isinstance(entry, dict):
-            normalized.append({"title": entry.get("title", ""), "date": entry.get("date")})
+            normalized.append({"title": entry.get("title", ""), "date": entry.get("date"), "src": entry.get("src")})
         elif isinstance(entry, str):
-            normalized.append({"title": entry, "date": None})
+            normalized.append({"title": entry, "date": None, "src": None})
     return normalized
 
 
@@ -126,9 +126,9 @@ def save_posted_link(link):
         json.dump(list(links), f, ensure_ascii=False, indent=2)
 
 
-def save_posted_title(title):
+def save_posted_title(title, src_title=None):
     titles = load_posted_titles()
-    titles.append({"title": title, "date": datetime.date.today().isoformat()})
+    titles.append({"title": title, "date": datetime.date.today().isoformat(), "src": src_title})
     titles = titles[-1000:]  # 무한 증가 방지 (날짜 필터링 여유를 위해 넉넉히)
     with open(POSTED_TITLES_FILE, "w", encoding="utf-8") as f:
         json.dump(titles, f, ensure_ascii=False, indent=2)
@@ -149,6 +149,48 @@ def get_recent_titles_within_days(days=DEDUP_WINDOW_DAYS):
         if entry_date >= cutoff:
             result.append(entry["title"])
     return result
+
+
+def _norm_ko_title(t):
+    t = (t or "").lower().replace("방탄소년단", "bts")
+    t = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", t)       # [종합], (사진) 같은 말머리 제거
+    t = re.sub(r"[^0-9a-z가-힣\s]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _title_bigrams(t):
+    s = t.replace(" ", "")
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def get_recent_source_titles(days=DEDUP_WINDOW_DAYS):
+    """최근 N일 이내 발행한 글의 '한국어 원문 제목' 목록 (src가 기록된 것만)."""
+    cutoff = datetime.date.today() - datetime.timedelta(days=days)
+    out = []
+    for entry in load_posted_titles():
+        src, date_str = entry.get("src"), entry.get("date")
+        if not src or not date_str:
+            continue
+        try:
+            if datetime.date.fromisoformat(date_str) >= cutoff:
+                out.append(src)
+        except ValueError:
+            continue
+    return out
+
+
+def is_similar_source_title(ko_title):
+    """번역(Gemini 호출) 전에, 이미 발행한 기사와 같은 소식인지 한국어 제목으로 먼저 판단.
+    글자 2-gram 겹침 비율(자카드)이 SOURCE_TITLE_SIMILARITY(기본 0.25) 이상이면 같은 소식으로 본다."""
+    threshold = getattr(config, "SOURCE_TITLE_SIMILARITY", 0.25)
+    a = _title_bigrams(_norm_ko_title(ko_title))
+    if not a:
+        return None
+    for prev in get_recent_source_titles():
+        b = _title_bigrams(_norm_ko_title(prev))
+        if b and len(a & b) / len(a | b) >= threshold:
+            return prev
+    return None
 
 
 def is_similar_to_existing(title):
@@ -192,6 +234,8 @@ def resolve_real_url(google_news_url):
     """구글 뉴스 RSS의 리다이렉트 URL을 실제 언론사 URL로 변환. 실패 시 원래 URL 반환.
     gnewsdecoder는 {'success': True, 'decoded_url': ...} 형태로 반환한다
     (버전에 따라 'status' 키일 수도 있어 둘 다 처리)."""
+    if "news.google.com" not in google_news_url:
+        return google_news_url  # 네이버/다음 등 이미 실제 주소인 링크는 변환 불필요
     try:
         result = gnewsdecoder(google_news_url, interval=1)
         if isinstance(result, dict):
@@ -268,7 +312,14 @@ def fetch_naver_news_candidates(count_per_keyword=10):
     (2027년 6월까지) 동안 openapi.naver.com + 구버전 헤더로 계속 정상 작동한다.
     NCP에서 새로 발급받은 키는 이 방식으로 인증되지 않으니, 반드시
     developers.naver.com에서 예전에 발급받은 키를 사용해야 한다."""
-    if not getattr(config, "ENABLE_NAVER_SEARCH", False):
+    naver_id = getattr(config, "NAVER_CLIENT_ID", "")
+    naver_secret = getattr(config, "NAVER_CLIENT_SECRET", "")
+    # 설정에서 켜져 있거나, 키가 등록되어 있으면 검색한다
+    if not (getattr(config, "ENABLE_NAVER_SEARCH", False) or (naver_id and naver_secret)):
+        print("  ℹ️ [네이버] 꺼져 있음 (config_base.py의 ENABLE_NAVER_SEARCH = True 로 켜고 NAVER 키를 등록)")
+        return []
+    if not (naver_id and naver_secret):
+        print("  ⚠️ [네이버] NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 이 비어 있음 — GitHub Secrets와 워크플로우 env 확인")
         return []
 
     news_list = []
@@ -318,7 +369,12 @@ def fetch_daum_news_candidates(count_per_keyword=50):
     """카카오(다음) 웹 검색 API를 다음뉴스 도메인으로 필터링해서 사용.
     다음은 별도 뉴스 전용 검색 API를 제공하지 않아 웹 검색으로 대체합니다.
     카카오 API의 요청당 최대치(50)로 가져와서 daum.net 도메인이 걸릴 확률을 높인다."""
-    if not getattr(config, "ENABLE_DAUM_SEARCH", False):
+    kakao_key = getattr(config, "KAKAO_REST_API_KEY", "")
+    if not (getattr(config, "ENABLE_DAUM_SEARCH", False) or kakao_key):
+        print("  ℹ️ [다음] 꺼져 있음 (config_base.py의 ENABLE_DAUM_SEARCH = True 로 켜고 KAKAO_REST_API_KEY를 등록)")
+        return []
+    if not kakao_key:
+        print("  ⚠️ [다음] KAKAO_REST_API_KEY 가 비어 있음 — GitHub Secrets와 워크플로우 env 확인")
         return []
 
     news_list = []
@@ -976,6 +1032,13 @@ def run():
         if not is_kpop_relevant(item["title"]):
             continue
 
+        similar_src = is_similar_source_title(item["title"])
+        if similar_src:
+            print(f"\n[기사 후보 {index}] {item['title']}")
+            print(f"  ⚠️ 같은 소식으로 보이는 기사를 이미 다룸(한국어 제목 유사), 번역 전 건너뜀: {similar_src}")
+            save_posted_link(item["link"])
+            continue
+
         real_link = resolve_real_url(item["link"])
         if is_video_link(real_link):
             save_posted_link(item["link"])
@@ -1053,7 +1116,7 @@ def run():
             )
             print(f"  ✔ 발행 완료: {result.get('link')}")
             save_posted_link(item["link"])
-            save_posted_title(new_title)
+            save_posted_title(new_title, item["title"])
             published += 1
 
             try:

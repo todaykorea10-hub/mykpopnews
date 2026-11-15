@@ -5,8 +5,8 @@
 GEMINI_MODEL = "gemini-3.1-flash-lite"  # 기사 재작성용 텍스트 모델. Gemini 모델 세대교체가 잦으니, 404(모델 지원 종료) 오류가 뜨면 그 에러 메시지가 안내하는 최신 모델명으로 바로 교체하세요
 
 # ── 검색 소스 켜고 끄기 (비밀값 아님, 토글만) ──
-ENABLE_NAVER_SEARCH = False
-ENABLE_DAUM_SEARCH = False
+ENABLE_NAVER_SEARCH = true
+ENABLE_DAUM_SEARCH = true
 
 # ── SNS 자동 게시 켜고 끄기 (비밀값 아님, 토글만) ──
 ENABLE_TWITTER_POST = False
@@ -66,8 +66,8 @@ GROUP_IMAGE_SELECTION = "random"  # "random" 또는 "sequential"
 CONTENT_LANGUAGE = "en"
 
 # ── 발행 정책 ──
-MAX_POSTS_PER_RUN = 5          # 실행 1회당 최대 발행 건수
-SPREAD_MINUTES = 60            # 이번 실행에서 발행할 글들을 이 시간(분) 안에 나눠서 게시
+MAX_POSTS_PER_RUN = 10          # 실행 1회당 최대 발행 건수
+SPREAD_MINUTES = 90            # 이번 실행에서 발행할 글들을 이 시간(분) 안에 나눠서 게시
 SIMILARITY_THRESHOLD = 0.3     # 제목 유사도가 이 값 이상이면 중복으로 간주 (0~1)
 DEFAULT_CATEGORY = "Chart"     # AI가 카테고리를 못 정하면 사용할 기본 카테고리
 POST_STATUS = "publish"        # "draft" 로 바꾸면 발행 전 검수 가능

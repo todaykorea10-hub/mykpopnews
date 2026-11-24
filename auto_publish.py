@@ -948,11 +948,45 @@ def get_media_url(media_id):
         return None
 
 
+# 허용 카테고리 6종 (이 밖의 값은 새 카테고리를 만들지 않고 기본 카테고리로 처리)
+ALLOWED_CATEGORIES = ["Comeback", "Chart", "Tour/Concert", "Photoshoot/Interview", "Rumor/Issue", "Global Reaction"]
+_CATEGORY_ALIASES = {
+    "컴백": "Comeback", "차트": "Chart", "투어/공연": "Tour/Concert",
+    "화보/인터뷰": "Photoshoot/Interview", "루머/이슈": "Rumor/Issue", "해외반응": "Global Reaction",
+}
+
+
+def normalize_category(name):
+    """Gemini가 돌려준 카테고리를 허용 6종 중 하나로 정리한다. 그 외 값은 기본 카테고리."""
+    default = getattr(config, "DEFAULT_CATEGORY", "Global Reaction")
+    n = (name or "").strip()
+    if not n:
+        return default
+    if n in _CATEGORY_ALIASES:
+        return _CATEGORY_ALIASES[n]
+    key = re.sub(r"\s+", "", n).lower()
+    for c in ALLOWED_CATEGORIES:
+        if re.sub(r"\s+", "", c).lower() == key:
+            return c
+    print(f"  ℹ️ 허용되지 않은 카테고리 '{n}' → 기본 카테고리 '{default}' 사용 (새 카테고리 생성 안 함)")
+    return default
+
+
 def get_or_create_category(name):
-    resp = requests.get(f"{config.WP_URL}/wp-json/wp/v2/categories", headers=wp_auth_header(), params={"search": name}, timeout=10)
+    # 글이 많은 카테고리부터 받아서, 이름이 정확히 같은 것을 우선 사용한다
+    # (비슷한 이름의 작은 카테고리가 먼저 걸리는 것을 방지)
+    resp = requests.get(
+        f"{config.WP_URL}/wp-json/wp/v2/categories",
+        headers=wp_auth_header(),
+        params={"search": name, "per_page": 20, "orderby": "count", "order": "desc"},
+        timeout=10,
+    )
     resp.raise_for_status()
     results = resp.json()
     if results:
+        for r in results:
+            if (r.get("name") or "").strip().lower() == name.strip().lower():
+                return r["id"]
         return results[0]["id"]
     create = requests.post(f"{config.WP_URL}/wp-json/wp/v2/categories", headers=wp_auth_header(), json={"name": name}, timeout=10)
     create.raise_for_status()
@@ -1079,7 +1113,8 @@ def run():
             save_posted_link(item["link"])
             continue
 
-        category_id = get_or_create_category(rewritten.get("category") or config.DEFAULT_CATEGORY)
+        category_name = normalize_category(rewritten.get("category"))
+        category_id = get_or_create_category(category_name)
 
         media_id = None
         image_bytes = None
@@ -1098,7 +1133,7 @@ def run():
             try:
                 card_label = rewritten.get("card_label") or new_title
                 image_bytes, mime_type = generate_typography_card(
-                    rewritten.get("category") or config.DEFAULT_CATEGORY,
+                    category_name,
                     card_label,
                 )
                 media_id = upload_media(image_bytes, "kpop-card.png", mime_type)

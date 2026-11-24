@@ -806,17 +806,19 @@ def generate_typography_card(category_name, headline_text):
     from PIL import Image, ImageDraw, ImageFont
 
     W, H = 900, 620
-    BG = (18, 18, 31)          # --bg-base
-    ACCENT_PINK = (255, 61, 119)
-    ACCENT_LIME = (212, 255, 61)
-    TEXT_MAIN = (243, 242, 255)
+    # 새 사이트 색: 육색(Pantone 486 계열) 바탕 + 주황(Pantone 178 계열) 포인트
+    BG = (247, 211, 198)       # 육색 연한 톤 (#F7D3C6)
+    ACCENT_ORANGE = (255, 92, 57)    # 주황 (#FF5C39)
+    ACCENT_DEEP = (184, 53, 18)      # 진한 주황 (#B83512) — 작은 글자용
+    ACCENT_YUK = (235, 160, 143)     # 육색 본색 (#EBA08F)
+    TEXT_MAIN = (58, 33, 24)         # 진한 갈색 (#3A2118)
 
     img = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img, "RGBA")
 
-    # 우측 상단 코너 액센트 (은은한 대각선 스트라이프)
-    draw.polygon([(W, 0), (W, 260), (W - 260, 0)], fill=(*ACCENT_PINK, 60))
-    draw.polygon([(0, H), (0, H - 180), (200, H)], fill=(*ACCENT_LIME, 45))
+    # 코너 도형: 우측 상단 주황, 좌측 하단 육색 (사이트 로고와 같은 모양)
+    draw.polygon([(W, 0), (W, 150), (W - 150, 0)], fill=ACCENT_ORANGE)
+    draw.polygon([(0, H), (0, H - 100), (100, H)], fill=ACCENT_YUK)
 
     font_file_label = pick_font_file(category_name)
     font_file_headline = pick_font_file(headline_text)
@@ -831,8 +833,8 @@ def generate_typography_card(category_name, headline_text):
 
     margin = 60
 
-    # 카테고리 라벨 (연두색, 대문자)
-    draw.text((margin, margin), category_name.upper(), font=font_label, fill=ACCENT_LIME)
+    # 카테고리 라벨 (진한 주황, 대문자)
+    draw.text((margin, margin), category_name.upper(), font=font_label, fill=ACCENT_DEEP)
 
     # 핵심 헤드라인 (여러 줄로 감싸서 중앙 배치)
     max_text_width = W - margin * 2
@@ -847,7 +849,7 @@ def generate_typography_card(category_name, headline_text):
         y += line_height
 
     # 워터마크
-    draw.text((margin, H - margin - 26), "MYKPOPNEWS.KR", font=font_watermark, fill=(*ACCENT_PINK, 200))
+    draw.text((margin, H - margin - 26), "MYKPOPNEWS.KR", font=font_watermark, fill=ACCENT_DEEP)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

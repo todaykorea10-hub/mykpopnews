@@ -46,7 +46,7 @@ GROUP_ALIASES = {
     "izna": ["이즈나", "izna"],
 }
 RECENCY_DAYS = 1  # 최근 N일 이내 뉴스만 검색
-DEDUP_WINDOW_DAYS = 5   # 최근 N일 이내 발행된 제목과만 유사도 비교
+DEDUP_WINDOW_DAYS = 7   # 최근 N일 이내 발행된 제목과만 유사도 비교
 
 # ── K-pop 관련성 검증: 제목에 그룹명이 없어도 이 용어 중 하나가 있으면 통과 ──
 GENERIC_KPOP_TERMS = [
@@ -67,8 +67,8 @@ CONTENT_LANGUAGE = "en"
 
 # ── 발행 정책 ──
 MAX_POSTS_PER_RUN = 10          # 실행 1회당 최대 발행 건수
-SPREAD_MINUTES = 90            # 이번 실행에서 발행할 글들을 이 시간(분) 안에 나눠서 게시
-SIMILARITY_THRESHOLD = 0.3     # 제목 유사도가 이 값 이상이면 중복으로 간주 (0~1)
+SPREAD_MINUTES = 60            # 이번 실행에서 발행할 글들을 이 시간(분) 안에 나눠서 게시
+SIMILARITY_THRESHOLD = 0.5     # 제목 유사도가 이 값 이상이면 중복으로 간주 (0~1)
 DEFAULT_CATEGORY = "Chart"     # AI가 카테고리를 못 정하면 사용할 기본 카테고리
 POST_STATUS = "publish"        # "draft" 로 바꾸면 발행 전 검수 가능
 
@@ -76,7 +76,7 @@ POST_STATUS = "publish"        # "draft" 로 바꾸면 발행 전 검수 가능
 # 깃허브 액션으로 돌릴 때는 워크플로우의 cron 스케줄이 반복을 담당하므로 False로 둡니다.
 RUN_CONTINUOUSLY = False
 MIN_INTERVAL_MINUTES = 60
-MAX_INTERVAL_MINUTES = 120
+MAX_INTERVAL_MINUTES = 80
 
 # ── Blogger 이관 (migrate_from_blogger.py 전용) ──
 BLOGGER_BLOG_URL = "https://howto9988.blogspot.com"
